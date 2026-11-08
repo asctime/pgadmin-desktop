@@ -1,0 +1,1605 @@
+//////////////////////////////////////////////////////////////////////////
+//
+//
+// Copyright (C) 2002 - 2016, The pgAdmin Development Team
+// Copyright (C) 2027, asctime
+// This software is released under the PostgreSQL Licence
+//
+// ctlSQLGrid.cpp - SQL Query result window
+//
+//////////////////////////////////////////////////////////////////////////
+
+#include "pgAdmin3.h"
+
+// wxWindows headers
+#include <wx/wx.h>
+#include <wx/clipbrd.h>
+#include <wx/generic/gridctrl.h>
+#include "db/pgConn.h"
+#include "ctl/ctlSQLGrid.h"
+#include "utils/sysSettings.h"
+#include "frm/frmExport.h"
+#include <wx/regex.h>
+#include "ctl/ctlSQLResult.h"
+#include "utils/misc.h"
+#include "utils/FunctionPGHelper.h"
+#include "utils/PreviewHtml.h"
+
+#define EXTRAEXTENT_HEIGHT 6
+#define EXTRAEXTENT_WIDTH  6
+
+//DEFINE_EVENT_TYPE(myEVT_SHOW_POPUP)
+
+BEGIN_EVENT_TABLE(ctlSQLGrid, wxGrid)
+EVT_MOUSEWHEEL(ctlSQLGrid::OnMouseWheel)
+//EVT_CUSTOM(wxID_ANY, myEVT_SHOW_POPUP,ctlSQLGrid::OnShowPopup)
+EVT_GRID_COL_SIZE(ctlSQLGrid::OnGridColSize)
+EVT_GRID_LABEL_LEFT_CLICK(ctlSQLGrid::OnLabelClick)
+EVT_GRID_CELL_RIGHT_CLICK(ctlSQLGrid::OnCellRightClick)
+EVT_GRID_SELECT_CELL(ctlSQLGrid::OnGridSelectCell)
+//EVT_PAINT( ctlSQLGrid::OnPaint )
+END_EVENT_TABLE()
+
+IMPLEMENT_DYNAMIC_CLASS(ctlSQLGrid, wxGrid)
+
+ctlSQLGrid::ctlSQLGrid()
+{
+}
+
+void ctlSQLGrid::setresizedpi() {
+    // Set cells font
+    wxFont fntCells(settings->GetSQLFont());
+    SetDefaultCellFont(fntCells);
+    // Set labels font
+    wxFont fntLabel(settings->GetSystemFont());
+    fntLabel.SetWeight(wxFONTWEIGHT_BOLD);
+    SetLabelFont(fntLabel);
+    SetColLabelAlignment(wxALIGN_LEFT, wxALIGN_CENTRE);
+    SetDefaultCellAlignment(wxALIGN_LEFT, wxALIGN_TOP);
+    SetRowLabelSize(FromDIP(50));
+    SetDefaultRowSize(fntCells.GetPointSize() * 2 + 2);
+    SetColLabelSize(fntLabel.GetPointSize() * 4);
+
+}
+
+ctlSQLGrid::ctlSQLGrid(wxWindow* parent, wxWindowID id, const wxPoint& pos, const wxSize& size)
+    : wxGrid(parent, id, pos, size, wxWANTS_CHARS | wxVSCROLL | wxHSCROLL)
+{
+    /*
+        Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {
+            setresizedpi();
+            event.Skip();
+            });
+    */
+    Bind(wxEVT_THREAD, &ctlSQLGrid::OnShowPopup, this);
+    setresizedpi();
+    SetDefaultCellOverflow(false);
+    // load pgadmin-desktop-opt.json 
+    wxJSONValue def(wxJSONType::wxJSONTYPE_OBJECT);
+    wxJSONValue opt(wxJSONType::wxJSONTYPE_OBJECT);
+    wxString scol;
+    if (wxSystemSettings::GetAppearance().IsUsingDarkBackground()) {
+        scol="#616800ff";
+        def["colorWithNewLine"]=scol;
+        scol="#085f00ff";
+        def["colorOdd"]=scol;
+        scol="#013a01ff";
+        def["colorPlanRow"]=scol;
+        scol="#968c00ff";
+        def["colorPlanNode"]=scol;
+        scol="#47348bff";
+        def["colorPlanNodeCollapse"]=scol;
+    } else
+    {
+        scol="#EFE4B0";
+        def["colorWithNewLine"]=scol;
+        scol="#e0ffe0ff";
+        def["colorOdd"]=scol;
+        scol="#e0ffe0ff";
+        def["colorPlanRow"]=scol;
+        scol="#f8f082ff";
+        def["colorPlanNode"]=scol;
+        scol="#c8bfe8ff";
+        def["colorPlanNodeCollapse"]=scol;
+
+    }
+	int t_width=0;
+	def["thousandsWidthSeparator"]=t_width;
+    //color.Set(239, 228, 176);
+	settings->ReloadJsonFileIfNeed();
+    settings->ReadJsonObect("ctlSQLGrid", opt, def);
+    if (!opt.IsNull()) { // check
+        bool ischange=false;
+		int tmp=opt["thousandsWidthSeparator"].AsInt();
+
+        if (tmp<-15 || tmp>15) {opt["thousandsWidthSeparator"]=def["thousandsWidthSeparator"]; ischange=true;}
+        wxString c5=opt["colorWithNewLine"].AsString();
+        wxColour cl5(c5);
+        if (!cl5.IsOk()) {opt["colorWithNewLine"] = def["colorWithNewLine"]; ischange=true;}
+        c5=opt["colorOdd"].AsString();
+        cl5=c5;
+        if (!cl5.IsOk()) {opt["colorOdd"] = def["colorOdd"]; ischange=true;}
+        c5=opt["colorPlanRow"].AsString();
+        cl5=c5;
+        if (!cl5.IsOk()) {opt["colorPlanRow"] = def["colorPlanRow"]; ischange=true;}
+        c5=opt["colorPlanNode"].AsString();
+        cl5=c5;
+        if (!cl5.IsOk()) {opt["colorPlanNode"] = def["colorPlanNode"]; ischange=true;}
+        c5=opt["colorPlanNodeCollapse"].AsString();
+        cl5=c5;
+        if (!cl5.IsOk()) {opt["colorPlanNodeCollapse"] = def["colorPlanNodeCollapse"]; ischange=true;}
+    }
+    else 
+        opt = def;
+	int thousandsWidthSeparator = opt["thousandsWidthSeparator"].AsInt();
+    wxString c5=opt["colorWithNewLine"].AsString();
+    wxColour cl5(c5);
+    c5=opt["colorOdd"].AsString();
+    wxColour cl6(c5);
+    colorodd=cl6;
+    cl6=opt["colorPlanRow"].AsString();
+    colorplanrow=cl6;
+    cl6=opt["colorPlanNode"].AsString();
+    colorplannode=cl6;
+    cl6=opt["colorPlanNodeCollapse"].AsString();
+    colorplannodecollapse=cl6;
+    //colorplanrow,colorplannode
+    SetDefaultRenderer(new  CursorCellRenderer(thousandsWidthSeparator,cl5));
+    //SetUseNativeColLabels(true);
+    //UseNativeColHeader(true);
+    SetCellHighlightColour(wxColor(0, 0, 0));
+#ifdef __WXGTK__
+    wxColour selbg = GetSelectionBackground();
+    wxColour cbg = GetBackgroundColour();
+    wxColour labbg = GetLabelBackgroundColour();
+    wxString t1 = selbg.GetAsString();
+    wxString t2 = labbg.GetAsString();
+    wxColour cline = GetGridLineColour();
+    wxString t3 = cline.GetAsString();
+    if (labbg.GetRGB() == cline.GetRGB()) {
+        int min = wxMin(labbg.GetBlue(), labbg.GetGreen());
+        min = wxMin(min, labbg.GetRed());
+        if (min > 200) min = min - 30; else min = min + 30;
+        wxColour labbgn(min, min, min);
+        SetLabelBackgroundColour(labbgn);
+    }
+    if (cline.GetRGB() ==  cbg.GetRGB()) {
+        int min = wxMin(cline.GetBlue(), cline.GetGreen());
+        min = wxMin(min, cline.GetRed());
+        if (min > 200) min = min - 30; else min = min + 30;
+        wxColour newgridclr(min, min, min);
+        SetGridLineColour(newgridclr);
+    }
+#endif
+    grp = NULL;
+    isSort = false;
+    searchStr = "";
+    Connect(wxID_ANY, wxEVT_GRID_LABEL_LEFT_DCLICK, wxGridEventHandler(ctlSQLGrid::OnLabelDoubleClick));
+}
+#include "wx/renderer.h"
+#include "wx/headerctrl.h"
+void ctlSQLGrid::OnGridSelectCell(wxGridEvent& evt) {
+    int row = evt.GetRow();
+    //int col = evt.GetCol();
+    wxGridCellCoords cr = GetGridCursorCoords();
+    if (cr.GetRow() != row && cr.GetRow() != -1) {
+        GetGridRowLabelWindow()->Refresh();
+    }
+}
+void ctlSQLGrid::DrawRowLabel(wxDC& dc, int row) {
+    int c = GetGridCursorRow();
+    if (c != row) wxGrid::DrawRowLabel(dc, row);
+    else {
+        //wxColour c = wxSystemSettings::GetColour(wxSYS_COLOUR_BTNHIGHLIGHT);
+        wxColour c = GetGridRowLabelWindow()->GetBackgroundColour();
+        int d = 20;
+        int r = c.GetRed() + d; int g = c.GetGreen() + d; int b = c.GetBlue() + d;
+        if (r > 255 || g > 255 || b > 255) {
+            r = r - 2 * d;
+            g = g - 2 * d;
+            b = b - 2 * d;
+        }
+        wxColour c3(r, g, b);
+        wxDCBrushChanger setBrush(dc, c3);
+        wxDCPenChanger setPen(dc, *wxTRANSPARENT_PEN);
+        wxRect rect(0, GetRowTop(row), GetRowLabelSize(), GetRowHeight(row));
+        dc.DrawRectangle(rect);
+        wxGrid::DrawRowLabel(dc, row);
+    }
+
+}
+void ctlSQLGrid::DrawColLabel(wxDC& dc, int col) {
+    wxGrid::DrawColLabel(dc, col);
+    if (!IsSort()) return;
+    int colLeft = GetColLeft(col);
+
+    wxRect rect(colLeft, 0, GetColWidth(col), m_colLabelHeight);
+    sqlResultTable* t = (sqlResultTable*)GetTable();
+    wxHeaderSortIconType sortArrow = t->getSortColumn(col) != 0
+        ? t->getSortColumn(col) > 0
+        ? wxHDR_SORT_ICON_UP
+        : wxHDR_SORT_ICON_DOWN
+        : wxHDR_SORT_ICON_NONE;
+
+    if (sortArrow != wxHDR_SORT_ICON_NONE)
+    {
+        wxRect ar = rect;
+
+        // make a rect for the arrow
+        ar.height = FromDIP(4);
+        ar.width = FromDIP(8);
+        ar.y += (rect.height - ar.height) / 2;
+        ar.x = ar.x + rect.width - 3 * ar.width / 2;
+        int arrowSpace = 0;
+        arrowSpace = 3 * ar.width / 2; // space to preserve when drawing the label
+        wxPoint triPt[3];
+        if (sortArrow & wxHDR_SORT_ICON_UP)
+        {
+            triPt[0].x = ar.width / 2;
+            triPt[0].y = 0;
+            triPt[1].x = ar.width;
+            triPt[1].y = ar.height;
+            triPt[2].x = 0;
+            triPt[2].y = ar.height;
+        }
+        else
+        {
+            triPt[0].x = 0;
+            triPt[0].y = 0;
+            triPt[1].x = ar.width;
+            triPt[1].y = 0;
+            triPt[2].x = ar.width / 2;
+            triPt[2].y = ar.height;
+        }
+
+        wxColour c;
+
+        c = wxSystemSettings::GetColour(wxSYS_COLOUR_3DSHADOW);
+        for (int k = 0; k < MAX_COL_SORT; k++) {
+            int cl = t->colsortnumber[k];
+            if (cl != -1) {
+                if (cl == col) {
+                    if (k == 0) c = wxColor(155, 17, 48); // red
+                    if (k == 1) c = wxColor(255, 255, 0); // yellow
+                    if (k == 2) c = wxColor(34, 199, 76); // green
+                    if (k == 3) c = wxColor(12, 38, 160);  // blue
+                }
+            }
+            else break;
+        }
+        wxDCPenChanger setPen(dc, c);
+        wxDCBrushChanger setBrush(dc, c);
+
+        wxDCClipper clip(dc, rect);
+        dc.DrawPolygon(3, triPt, ar.x, ar.y);
+    }
+
+    //wxRendererNative::Get().DrawHeaderButton
+    //                        (m_colWindow,
+    //                            //GetColLabelWindow(),
+    //                            dc,
+    //                            rect,
+    //                            0,
+    //                            IsSortingBy(col)
+    //                                ? IsSortOrderAscending()
+    //                                    ? wxHDR_SORT_ICON_UP
+    //                                    : wxHDR_SORT_ICON_DOWN
+    //                                : wxHDR_SORT_ICON_NONE
+    //                        );
+
+
+}
+void ctlSQLGrid::OnGridColSize(wxGridSizeEvent& event)
+{
+    // Save key="index:label", value=size
+    int col = event.GetRowOrCol();
+    if (col < 0) return;
+    colSizes[GetColKeyValue(col)] = GetColSize(col);
+
+}
+void ctlSQLGrid::OnCopy(wxCommandEvent& ev)
+{
+    Copy(false);
+}
+
+void ctlSQLGrid::OnMouseWheel(wxMouseEvent& event)
+{
+    if (event.ControlDown() || event.CmdDown())
+    {
+        wxFont fontlabel = GetLabelFont();
+        wxFont fontcells = GetDefaultCellFont();
+        if (event.GetWheelRotation() > 0)
+        {
+            fontlabel.SetPointSize(fontlabel.GetPointSize() - 1);
+            fontcells.SetPointSize(fontcells.GetPointSize() - 1);
+        }
+        else
+        {
+            fontlabel.SetPointSize(fontlabel.GetPointSize() + 1);
+            fontcells.SetPointSize(fontcells.GetPointSize() + 1);
+        }
+        SetLabelFont(fontlabel);
+        SetDefaultCellFont(fontcells);
+        SetColLabelSize(fontlabel.GetPointSize() * 4);
+        SetDefaultRowSize(fontcells.GetPointSize() * 2);
+        for (int index = 0; index < GetNumberCols(); index++)
+            SetColSize(index, -1);
+        ForceRefresh();
+    }
+    else
+        event.Skip();
+}
+
+wxString ctlSQLGrid::GetExportLine(int row)
+{
+    return GetExportLine(row, 0, GetNumberCols() - 1);
+}
+
+
+wxString ctlSQLGrid::GetExportLine(int row, int col1, int col2)
+{
+    wxArrayInt cols;
+    wxString str;
+    int i;
+
+    if (col2 < col1)
+        return str;
+
+    cols.Alloc(col2 - col1 + 1);
+    for (i = col1; i <= col2; i++)
+    {
+        cols.Add(i);
+    }
+
+    return GetExportLine(row, cols);
+}
+
+wxString ctlSQLGrid::GetExportLine(int row, wxArrayInt cols)
+{
+    wxString str;
+    unsigned int col;
+
+    if (GetNumberCols() == 0 || GetRowSize(row) == 0)
+        return str;
+    sqlResultTable *t=(sqlResultTable *)GetTable();
+    wxString colsep = settings->GetCopyColSeparator();
+    if (generatesql == 2 || generatesql == 1) colsep = wxT(",");
+    if (generatesql == 3) colsep = wxT(" and ");
+    wxString qtsimbol = settings->GetCopyQuoteChar();
+    if (generatesql > 0) qtsimbol = wxT("'");
+    wxString head = wxT("insert into tbl(");
+    if (cols.Count() > 1 && generatesql > 1) str.Append("(");
+    for (col = 0; col < cols.Count(); col++)
+    {
+        if (col > 0)
+            str.Append(colsep);
+        if (col > 0) head.Append(colsep);
+        head = head + GetColumnName(cols[col]);
+        wxString text;
+        bool isnull=false;
+        int pgtype=0;
+        if ( t && generatesql > 0)
+        {
+            // only insert , in_list and where list
+            text = t->GetValueWithNull( row, cols[col] , &isnull, &pgtype );
+        } else text = GetCellValue(row, cols[col]);
+
+        wxString cname = GetColumnName(cols[col]);
+        bool needQuote = false;
+        if (settings->GetCopyQuoting() == 1)
+        {
+            needQuote = IsColText(cols[col]);
+        }
+        else if (settings->GetCopyQuoting() == 2)
+            /* Quote everything */
+            needQuote = true;
+        if (isnull && generatesql > 0) { needQuote = false; }
+        else
+            if (generatesql > 0) needQuote = IsColText(cols[col]);
+
+        if (generatesql > 0) {
+            if (!isnull) {
+                text.Replace(wxT("'"), wxT("''"));
+            }
+            else
+                text = wxT("null");
+
+        }
+        if (generatesql == 3) {
+            if (isnull)
+                str.Append(cname).Append(" is ");
+            else
+                str.Append(cname).Append("=");
+        }
+
+        if (needQuote)
+            str.Append(qtsimbol);
+        str.Append(text);
+        if (needQuote)
+            str.Append(qtsimbol);
+    }
+    if (cols.Count() > 1 && generatesql > 1) str.Append(")");
+    if (generatesql == 1) str = head + wxT(") values (") + str + ");";
+
+    return str;
+}
+
+wxString ctlSQLGrid::GetColumnName(int colNum)
+{
+    wxString columnName = GetColLabelValue(colNum);
+    columnName = columnName.Left(columnName.find(wxT("\n")));
+    return columnName;
+}
+
+void ctlSQLGrid::AppendColumnHeader(wxString& str, int start, int end)
+{
+    size_t i, arrsize;
+    arrsize = (end - start + 1);
+    wxArrayInt columns;
+
+    for (i = 0; i < arrsize; i++)
+    {
+        columns.Add(start + i);
+    }
+
+    AppendColumnHeader(str, columns);
+}
+
+void ctlSQLGrid::AppendColumnHeader(wxString& str, wxArrayInt columns)
+{
+    if (settings->GetColumnNames() || generatesql == 2)
+    {
+        bool CopyQuoting = (settings->GetCopyQuoting() == 1 || settings->GetCopyQuoting() == 2);
+        size_t i;
+        wxString fielddelim = ",";
+        if (generatesql == 3) return;
+        if (generatesql == 1) return;
+        for (i = 0; i < columns.Count(); i++)
+        {
+            long columnPos = columns.Item(i);
+            if (generatesql == 2) {
+                if (i > 0) str.Append(fielddelim);
+                if (i == 0 && columns.Count() > 1) str.Append("(");
+                str.Append(GetColumnName(columnPos));
+                if (i == columns.Count() - 1 && columns.Count() > 1 && generatesql == 2) str.Append(") in (");
+                if (columns.Count() == 1 && generatesql == 2) str.Append(" in (");
+
+            }
+            else
+            {
+                if (i > 0)
+                    str.Append(settings->GetCopyColSeparator());
+
+                if (CopyQuoting)
+                    str.Append(settings->GetCopyQuoteChar());
+                str.Append(GetColumnName(columnPos));
+                if (CopyQuoting)
+                    str.Append(settings->GetCopyQuoteChar());
+            }
+        }
+
+        str.Append(END_OF_LINE);
+    }
+}
+int compare_int(int* a, int* b)
+{
+    if (*a > *b) return 1;
+    else if (*a < *b) return -1;
+    else return 0;
+}
+#include <map>
+class  selMerge {
+public:
+    std::map<int, std::map<int, int>> getmap() { return grid; }
+    void add(int row, int col);
+    void setArrayColumns(int row, wxArrayInt& columns);
+    void addRange(int r1, int r2, int c1, int c2) {
+        //std::map<int, int> v;
+
+        for (int r = r1; r <= r2; r++)
+        {
+            auto& v = grid[r];
+            for (int c = c1; c <= c2; c++) {
+                v[c] = c;
+            }
+            //grid[r].swap(v);
+        }
+    }
+
+private:
+    std::map<int, std::map<int, int>> grid;
+};
+void selMerge::add(int row, int col) {
+    std::map<int, int> v;
+    v = grid[row];
+    v[col] = col;
+}
+
+void  selMerge::setArrayColumns(int row, wxArrayInt& columns) {
+    auto& v = grid[row];
+    for (const auto& pair : v) {
+        //std::cout << pair.first << ": " << pair.second << '\n';
+        int k = pair.second;
+        columns.Add(k);
+    }
+};
+int ctlSQLGrid::CopyTableToHtml(wxString htmlquery) {
+    wxString htm = "<html>"
+        "<head>"
+        "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\"/>\n"
+        "<style type = \"text/css\">\n"
+        "#maket { width: 90%;  border-collapse: collapse; table-layout: fixed;}\n"
+        "TD { vertical-align: top; border: 1px solid; padding: 2px; }\n"
+
+        ;
+    int s = htmlquery.find('"');
+    int e = htmlquery.find('"', s + 1);
+    if (s > 0 && e > s) {
+        wxString fnt = htmlquery.SubString(s + 1, e - 1);
+        htm += "PRE { " + fnt + ";}\n";
+    }
+    wxArrayInt cols = GetSelectedCols();
+    if (cols.GetCount() == 0) {
+        for (int i = 0; i < GetNumberCols(); i++)
+        {
+            cols.Add(i);
+        }
+    }
+    wxArrayInt rows = GetSelectedRows();
+    size_t numRows = GetNumberRows();
+    bool isRowsArray = rows.GetCount() > 0;
+    if (isRowsArray) numRows = rows.GetCount();
+    wxString bg = GetGridRowLabelWindow()->GetBackgroundColour().GetAsString(wxC2S_HTML_SYNTAX);
+    wxString head;
+    head = wxString::Format("<tr style=\"font-weight: bold; background: %s;\">", bg);
+    htm += wxString::Format("TD#cn { width: %dpx;font-weight: bold; background: %s;}\n", GetRowLabelSize(), bg);
+    head += wxString::Format("<td id=\"cn\"></td>");
+    int sumWidth = GetRowLabelSize();
+    for (int i = 0; i < cols.Count(); i++)
+    {
+        long columnPos = cols.Item(i);
+        int w = GetColWidth(columnPos);
+        sumWidth += w + 2;
+        htm += wxString::Format("TD#c%d { width: %dpx;}\n", i, w);
+        head += wxString::Format("<td id=\"c%d\">%s</td>", i, GetColumnName(columnPos));
+    }
+    head += "</tr>\n";
+    htm += "</style></head><body>";
+    htm.Replace("90%", wxString::Format("%dpx", sumWidth));
+
+    htm += htmlquery;
+    htm += "<br><table cellspacing=\"0\" cellpadding=\"0\" id=\"maket\">";
+    //		AppendColumnHeader(str, cols);
+    htm += head;
+    for (int i = 0; i < numRows; i++)
+    {
+        long rowPos = i;
+        if (isRowsArray) rowPos = rows.Item(i);
+        if (GetRowSize(rowPos) == 0) continue;
+        htm += "<tr>\n";
+        htm += wxString::Format("<td id=\"cn\"><pre>%ld</pre></td>", rowPos + 1);
+        for (int c = 0; c < cols.Count(); c++) {
+            wxString text = GetCellValue(rowPos, cols[c]);
+            htm += wxString::Format("<td id=\"c%d\"><pre>%s</pre></td>", c, escapeHtml(text, true));
+        }
+        htm += "</tr>\n";
+        //wxString cname = GetColumnName(cols[c]);
+
+    }
+    htm += "</table>";
+
+    if (wxTheClipboard->Open())
+    {
+        wxDataObjectComposite* dataobj = new wxDataObjectComposite();
+        dataobj->Add(new wxTextDataObject(htm));
+        dataobj->Add(new wxHTMLDataObject(htm));
+        wxTheClipboard->SetData(dataobj);
+        wxTheClipboard->Close();
+    }
+    return 0;
+}
+int ctlSQLGrid::Copy(int gensql)
+{
+    wxString str, tmp, linedelim = "";
+    int copied = 0;
+    size_t i;
+    generatesql = gensql;
+    //sqlResultTable* t = (sqlResultTable*)GetTable();
+    wxString sql = sqlquerytext.Lower();
+    int j = 0;
+    wxChar c;
+    wxString tn = wxEmptyString;
+    while ((j = sql.find("from", j)) > -1) {
+        j = j + 4;
+        c = sql[j];
+        i = j;
+        while (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            i++;
+            c = sql[i];
+        }
+        j = i;
+        if (c == '(') {
+            continue;
+        }
+        while (c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != ',' && c != '(' && c != ')' && c != ';') {
+            j++;
+            if (sql.Len() == j) break;
+            c = sql[j];
+        }
+        tn = sql.SubString(i, j - 1); // table name
+        if (sql.Len() == j) break;
+        j = j + 1;
+        i = j;
+        if (sql.Len() == j) break;
+        c = sql[j];
+        while (c > ' ' && c != ',' && c != '(' && c != ')') {
+            j++;
+            if (sql.Len() == j) break;
+            c = sql[j];
+        }
+        if (j > i) {
+            wxString al = sql.SubString(i, j - 1); // alias name
+            if (al.StartsWith("where")
+                || al.StartsWith("order")
+                || al.StartsWith("limit")
+                ) break;
+            tn = al;
+        }
+        break;
+    }
+
+    if (gensql == 2) linedelim = ",";
+    else if (gensql == 3) linedelim = " or ";
+    int lenrow = 0;
+
+    if (GetSelectedRows().GetCount())
+    {
+        AppendColumnHeader(str, 0, (GetNumberCols() - 1));
+
+        wxArrayInt rows = GetSelectedRows();
+        for (i = 0; i < rows.GetCount(); i++)
+        {
+            tmp = GetExportLine(rows.Item(i));
+            lenrow += tmp.Len() + linedelim.Len();
+            if (tmp.IsEmpty()) continue;
+            if (!tn.IsEmpty() && (generatesql == 1)) tmp.Replace("tbl", tn, false);
+            str.Append(tmp);
+            if (i < rows.GetCount() - 1 && (generatesql > 1)) str.Append(linedelim);
+            if (rows.GetCount() > 1)
+            {
+                bool delim = true;
+                if ((generatesql > 1) && (lenrow < 50))
+                    delim = false;
+                else
+                {
+                    lenrow = 0;
+                }
+                if (delim) str.Append(END_OF_LINE);
+            }
+        }
+
+        copied = rows.GetCount();
+    }
+    else if (GetSelectedCols().GetCount())
+    {
+        wxArrayInt cols = GetSelectedCols();
+        size_t numRows = GetNumberRows();
+
+        AppendColumnHeader(str, cols);
+
+        for (i = 0; i < numRows; i++)
+        {
+            tmp = GetExportLine(i, cols);
+            lenrow += tmp.Len() + linedelim.Len();
+            if (!tn.IsEmpty() && (generatesql == 1)) tmp.Replace("tbl", tn, false);
+            str.Append(tmp);
+            if (i < (numRows - 1) && (generatesql > 1)) str.Append(linedelim);
+            if (numRows > 1)
+            {
+                bool delim = true;
+                if ((generatesql > 1) && (lenrow < 50))
+                    delim = false;
+                else
+                {
+                    lenrow = 0;
+                }
+                if (delim) str.Append(END_OF_LINE);
+            }
+        }
+        copied = numRows;
+    }
+    else if (GetSelectionBlockTopLeft().GetCount() > 0 &&
+        GetSelectionBlockBottomRight().GetCount() > 0)
+    {
+        unsigned int x1, x2, y1, y2;
+        int count = GetSelectionBlockTopLeft().GetCount();
+
+        x1 = GetSelectionBlockTopLeft()[0].GetCol();
+        x2 = GetSelectionBlockBottomRight()[0].GetCol();
+        y1 = GetSelectionBlockTopLeft()[0].GetRow();
+        y2 = GetSelectionBlockBottomRight()[0].GetRow();
+        copied = 0;
+        AppendColumnHeader(str, x1, x2);
+        selMerge m;
+        for (size_t n = 0; n < count; n++)
+        {
+            x1 = GetSelectionBlockTopLeft()[n].GetCol();
+            x2 = GetSelectionBlockBottomRight()[n].GetCol();
+            y1 = GetSelectionBlockTopLeft()[n].GetRow();
+            y2 = GetSelectionBlockBottomRight()[n].GetRow();
+            if (generatesql > 1) {
+                m.addRange(y1, y2, x1, x2);
+            }
+            else
+            {
+                for (i = y1; i <= y2; i++)
+                {
+                    tmp = GetExportLine(i, x1, x2);
+                    lenrow += tmp.Len() + linedelim.Len();
+                    if (!tn.IsEmpty() && (generatesql == 1)) tmp.Replace("tbl", tn, false);
+                    str.Append(tmp);
+                    if (i < y2 && (generatesql > 1)) str.Append(linedelim);
+                    if (y2 > y1)
+                    {
+                        bool delim = true;
+                        if ((generatesql > 1) && (lenrow < 50))
+                            delim = false;
+                        else
+                        {
+                            lenrow = 0;
+                        }
+                        if (delim) str.Append(END_OF_LINE);
+                    }
+                }
+
+            }
+            copied = copied + (y2 - y1 + 1);
+        }
+        if (generatesql > 1) {
+            auto g = m.getmap();
+            wxArrayInt cols;
+            int maxr = g.size();
+            int i = 1;
+            for (const auto& pair : g) {
+                int r = pair.first;
+                cols.Clear();
+                m.setArrayColumns(r, cols);
+                str.Append(GetExportLine(r, cols));
+                if (i < maxr) str.Append(linedelim);
+                i++;
+            }
+        }
+    }
+    else
+    {
+        int row, col;
+        if (generatesql > 1) {
+            wxGridCellCoordsArray cord = GetSelectedCells();
+            int count = cord.GetCount();
+            int curr_row = 1000000000;
+            int next_row = 1000000000;
+
+            for (size_t n = 0; n < count; n++)
+            {
+                wxGridCellCoords& coords = cord[n];
+                if (coords.GetRow() < curr_row) curr_row = coords.GetRow();
+            }
+            while (curr_row != 1000000000)
+            {
+                wxArrayInt colsNum;
+                next_row = 1000000000;
+                for (size_t n = 0; n < count; n++)
+                {
+                    wxGridCellCoords& coords = cord[n];
+                    //wxString msg;
+                    //msg.Printf(wxT("���������� �������� ����� row=%d col=%d.\n"), coords.GetRow(), coords.GetCol());
+                    //wxMessageBox(msg, wxT("About coord"), wxOK | wxICON_INFORMATION, this);
+                    int r = coords.GetRow();
+                    if (r == curr_row) {
+                        colsNum.Add(coords.GetCol());
+                    }
+                    else if (r > curr_row && r < next_row) next_row = r;
+
+                }
+                colsNum.Sort(compare_int);
+                if (generatesql == 2) AppendColumnHeader(str, colsNum);
+                tmp = GetExportLine(curr_row, colsNum);
+                str.Append(tmp);
+                lenrow += tmp.Len() + linedelim.Len();
+                if ((next_row != 1000000000) && (generatesql == 3)) str.Append(linedelim);
+                if ((next_row != 1000000000) && (generatesql == 2)) str.Append(") or ");
+                {
+                    bool delim = true;
+                    if ((generatesql > 1) && (lenrow < 50))
+                        delim = false;
+                    else
+                    {
+                        lenrow = 0;
+                    }
+                    if (delim) str.Append(END_OF_LINE);
+                }
+                curr_row = next_row;
+                copied++;
+            }
+        }
+        else {
+            row = GetGridCursorRow();
+            col = GetGridCursorCol();
+
+            AppendColumnHeader(str, col, col);
+            tmp = GetExportLine(row, col, col);
+            if (!tn.IsEmpty() && (generatesql == 1)) tmp.Replace("tbl", tn, false);
+            str.Append(tmp);
+            copied = 1;
+        }
+    }
+    if (copied && (generatesql == 2)) str.Append(")");
+    if (copied && wxTheClipboard->Open())
+    {
+        wxTheClipboard->SetData(new wxTextDataObject(str));
+        wxTheClipboard->Close();
+    }
+    else
+    {
+        copied = 0;
+    }
+
+    return copied;
+}
+
+void ctlSQLGrid::OnLabelDoubleClick(wxGridEvent& event)
+{
+    int maxHeight, maxWidth;
+    GetClientSize(&maxWidth, &maxHeight);
+    int row = event.GetRow();
+    int col = event.GetCol();
+
+    int extent, extentWant = 0;
+
+    if (row >= 0)
+    {
+        for (col = 0; col < GetNumberCols(); col++)
+        {
+            extent = GetBestSize(row, col).GetHeight();
+            if (extent > extentWant)
+                extentWant = extent;
+        }
+
+        extentWant += EXTRAEXTENT_HEIGHT;
+        extentWant = wxMax(extentWant, GetRowMinimalAcceptableHeight());
+        extentWant = wxMin(extentWant, maxHeight * 3 / 4);
+        int currentHeight = GetRowHeight(row);
+
+        if (currentHeight >= maxHeight * 3 / 4 || currentHeight == extentWant)
+            extentWant = GetRowMinimalAcceptableHeight();
+        else if (currentHeight < maxHeight / 4)
+            extentWant = wxMin(maxHeight / 4, extentWant);
+        else if (currentHeight < maxHeight / 2)
+            extentWant = wxMin(maxHeight / 2, extentWant);
+        else if (currentHeight < maxHeight * 3 / 4)
+            extentWant = wxMin(maxHeight * 3 / 4, extentWant);
+
+        if (extentWant != currentHeight)
+        {
+            BeginBatch();
+            if (IsCellEditControlShown())
+            {
+                HideCellEditControl();
+                SaveEditControlValue();
+            }
+
+            SetRowSize(row, extentWant);
+            EndBatch();
+        }
+    }
+    else if (col >= 0)
+    {
+        // Holding Ctrl or Meta switches back to automatic column's sizing
+        if (event.ControlDown() || event.CmdDown())
+        {
+            colSizes.erase(GetColKeyValue(col));
+            BeginBatch();
+            if (IsCellEditControlShown())
+            {
+                HideCellEditControl();
+                SaveEditControlValue();
+            }
+            AutoSizeColumn(col, false);
+            EndBatch();
+        }
+        else // toggle between some predefined sizes
+        {
+
+            if (col < (int)colMaxSizes.GetCount() && colMaxSizes[col] >= 0)
+                extentWant = colMaxSizes[col];
+            else
+            {
+                for (row = 0; row < GetNumberRows(); row++)
+                {
+                    if (CheckRowPresent(row))
+                    {
+                        extent = GetBestSize(row, col).GetWidth();
+                        if (extent > extentWant)
+                            extentWant = extent;
+                    }
+                }
+            }
+
+            extentWant += EXTRAEXTENT_WIDTH;
+            extentWant = wxMax(extentWant, GetColMinimalAcceptableWidth());
+            extentWant = wxMin(extentWant, maxWidth * 3 / 4);
+            int currentWidth = GetColSize(col);
+
+            if (currentWidth >= maxWidth * 3 / 4 || currentWidth == extentWant)
+                extentWant = GetColMinimalAcceptableWidth();
+            else if (currentWidth < maxWidth / 4)
+                extentWant = wxMin(maxWidth / 4, extentWant);
+            else if (currentWidth < maxWidth / 2)
+                extentWant = wxMin(maxWidth / 2, extentWant);
+            else if (currentWidth < maxWidth * 3 / 4)
+                extentWant = wxMin(maxWidth * 3 / 4, extentWant);
+
+            if (extentWant != currentWidth)
+            {
+                BeginBatch();
+                if (IsCellEditControlShown())
+                {
+                    HideCellEditControl();
+                    SaveEditControlValue();
+                }
+                SetColSize(col, extentWant);
+                EndBatch();
+                colSizes[GetColKeyValue(col)] = extentWant;
+            }
+        }
+    }
+}
+void ctlSQLGrid::OnMouseEvent(wxMouseEvent& event)
+{
+    if (event.RightDown()) {
+        wxGridEvent ev;
+        OnCellRightClick(ev);
+        return;
+    }
+    event.Skip();
+}
+void ctlSQLGrid::OnShowPopup(wxThreadEvent& event) {
+   // wxMessageBox("omshowpopup "+event.GetString(), "msg");
+    wxString s = event.GetString();
+    wxPoint p = rpos;
+    wxPoint p1(rpos);
+    wxString bg;
+    wxColour bgColor = settings->GetSQLBoxColourBackground();
+    if (settings->GetSQLBoxUseSystemBackground())
+    {
+        bgColor = wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW);
+    }
+    bg = bgColor.GetAsString(wxC2S_HTML_SYNTAX);
+    long long lenstr=s.Len();
+    bool bigtext=lenstr >MAX_TEXT_LEN_COLORIZE;
+    if (lenstr > MAX_TEXT_LEN_WARNING) {
+        wxString h = NumToStrHuman(wxLongLong(lenstr));
+        if (wxMessageBox(wxString::Format(_("The line size is [ %s ] characters, do you want to continue?"),h ), _("Confirm"), wxYES_NO, this)!=wxYES) return;
+
+    }
+    // parse context
+    wxRegEx r(L"(?im)(select|from|where|set|insert|into|delete)\\b", wxRE_NEWLINE);
+    int cnt = 0;
+    if (r.IsValid()) {
+        size_t start=0;
+        std::unordered_set<wxString> unic;
+        while (r.Matches(s.Mid(start))) {
+            size_t start2 = 0, len2 = 0;
+            r.GetMatch(&start2, &len2, 1);
+            unic.insert(s.Mid(start + start2,len2));
+            r.GetMatch(&start2, &len2, 0);
+            start = start + start2 + len2;
+        }
+        cnt = unic.size();
+    }
+    if (cnt >= 2 && !bigtext) {
+        wxString q = s;
+        wxString html;
+        ctlSQLBox* box = new ctlSQLBox((wxWindow*) winMain, CTL_SQLQUERY, wxDefaultPosition, wxSize(0, 0), wxTE_MULTILINE | wxTE_RICH2);
+        box->SetText(q);
+        int l = q.Length();
+        box->Colourise(0, box->GetLength());
+        //bg = box->SetSQLBoxColourBackground(false).GetAsString(wxC2S_CSS_SYNTAX);
+        html = box->TextToHtml(0, box->GetLength(),false);
+        delete box;
+        s = html;
+        s = "<html><body BGCOLOR=\"" + bg + "\">" + s + "</body></html>";
+    }
+    else {
+        //simple text
+        PreviewHtml v;
+        wxString tt=v.Preview(s,fmtpreview::AUTO);
+        s = tt;
+    }
+    delete 	m_Popup;
+	// screen size
+		wxPoint posScreen;
+		wxSize sizeScreen;
+		const int displayNum = wxDisplay::GetFromPoint(p);
+		if (displayNum != wxNOT_FOUND)
+		{
+			const wxRect rectScreen = wxDisplay(displayNum).GetGeometry();
+			posScreen = rectScreen.GetPosition();
+			sizeScreen = rectScreen.GetSize();
+		}
+		else // outside of any display?
+		{
+			// just use the primary one then
+			posScreen = wxPoint(0, 0);
+			sizeScreen = wxGetDisplaySize();
+		}
+
+    wxSize rr(350, 70);
+	
+	if (bigtext) {
+		rr.x=(int) sizeScreen.x*0.8;rr.y=sizeScreen.y*0.7;
+	}
+    FunctionPGHelper fh(s);
+    wxString key = "content";
+    m_Popup = new popuphelp(this, key, &fh, p, rr);
+    if (m_Popup && m_Popup->IsValid() && rr != m_Popup->GetSizePopup() && !bigtext) {
+        // recreate with new size
+        rr = m_Popup->GetSizePopup();
+        delete 	m_Popup;
+        m_Popup = new popuphelp(this, key, &fh, p, rr);
+
+    }
+    if (m_Popup && m_Popup->IsValid()) {
+        //m_PopupHelp->UpdateWindowUI(true);
+        wxSize top_sz = m_Popup->GetSizePopup();
+        wxSize top_new(top_sz);
+        wxPoint oldp(p);
+        if (p.x + top_new.x > sizeScreen.x) p.x = sizeScreen.x - top_new.x - 20;
+        if (p.y + top_new.y > sizeScreen.y) p.y = sizeScreen.y - top_new.y - 20;
+        if (oldp == p) p.x = p.x + 20;
+        m_Popup->Move(p);
+        wxRect r = m_Popup->GetScreenRect();
+        if (r.Contains(p1)) {
+            //wxMouseEvent mv(wxEVT_MOTION,);
+            //wxGetMousePosition();
+        }
+        //m_PopupHelp->Position(p, wxSize(0, 17));
+        m_Popup->Popup();
+        //wxPopupTransientWindow
+    }
+
+}
+void ctlSQLGrid::OnCellRightClick(wxGridEvent& event)
+{
+    int row = event.GetRow();
+    int col = event.GetCol();
+    wxPoint p;
+    if (row != -1 && col != -1) {
+        rrow = row;
+        rcol = col;
+        rpos = ClientToScreen(event.GetPosition());
+        wxThreadEvent e(wxEVT_THREAD);
+        //e.SetString(s);
+        e.SetString(GetCellValue(row, col));
+        //GetEventHandler()->AddPendingEvent(e);
+        wxPostEvent(this, e);
+        //event.Skip();
+        return;
+    }
+    else
+    {
+        row = rrow;
+        col = rcol;
+        p = rpos;
+    }
+    wxString s = GetCellValue(row, col);
+}
+void ctlSQLGrid::OnLabelClick(wxGridEvent& event)
+{
+    int row = event.GetRow();
+    int col = event.GetCol();
+    if (row >= 0 && grp) {
+        grp->VisibleGroup(row, GetRowSize(row + 1) == 0);
+        Refresh();
+        return;
+    }
+    if (col >= 0 && (event.AltDown()))
+    {
+        // continue for sort event
+        if (IsSort()) {
+            sqlResultTable* t = (sqlResultTable*)GetTable();
+            t->setSortColumn(col);
+            return;
+        }
+    }
+    // add support for (de)selecting multiple rows and cols with Control pressed
+    else if (row >= 0 && (event.ControlDown() || event.CmdDown()))
+    {
+        if (GetSelectedRows().Index(row) == wxNOT_FOUND)
+            SelectRow(row, true);
+        else
+            DeselectRow(row);
+    }
+    else if (col >= 0 && (event.ControlDown() || event.CmdDown()))
+    {
+        if (GetSelectedCols().Index(col) == wxNOT_FOUND)
+            SelectCol(col, true);
+        else
+            DeselectCol(col);
+        event.Skip();
+    }
+    else
+        event.Skip();
+}
+
+void ctlSQLGrid::AutoSizeColumn(int col, bool setAsMin, bool doLimit)
+{
+    ColKeySizeHashMap::iterator it = colSizes.find(GetColKeyValue(col));
+    if (it != colSizes.end()) // Restore user-specified size
+        SetColSize(col, it->second);
+    else
+        wxGrid::AutoSizeColumn(col, setAsMin);
+
+    if (doLimit)
+    {
+        int newSize, oldSize;
+        int maxSize, totalSize = 0, availSize;
+
+        oldSize = GetColSize(col);
+        availSize = GetClientSize().GetWidth() - GetRowLabelSize();
+        maxSize = availSize / 2;
+        for (int i = 0; i < GetNumberCols(); i++)
+            totalSize += GetColSize(i);
+
+        if (oldSize > maxSize && totalSize > availSize)
+        {
+            totalSize -= oldSize;
+            /* Shrink wide column to maxSize.
+             * If the rest of the columns are short, make sure to use all the remaining space,
+             *   but no more than oldSize (which is enough according to AutoSizeColumns())
+             */
+            newSize = wxMin(oldSize, wxMax(maxSize, availSize - totalSize));
+            SetColSize(col, newSize);
+        }
+    }
+}
+
+void ctlSQLGrid::AutoSizeColumns(bool setAsMin)
+{
+    wxCoord newSize, oldSize, maxH = 0, newSizeH = 0;
+    wxCoord maxSize, totalSize = 0, availSize;
+    int col, nCols = GetNumberCols();
+    int row, nRows = GetNumberRows();
+    colMaxSizes.Empty();
+
+    /* We need to check each cell's width to choose best. wxGrid::AutoSizeColumns()
+     * is good, but looping through long result sets gives a noticeable slowdown.
+     * Thus we'll check every first 500 cells for each column.
+     */
+
+     // First pass: auto-size columns
+    for (col = 0; col < nCols; col++)
+    {
+        ColKeySizeHashMap::iterator it = colSizes.find(GetColKeyValue(col));
+        if (it != colSizes.end()) // Restore user-specified size
+        {
+            newSize = it->second;
+            colMaxSizes.Add(-1);
+        }
+        else
+        {
+            wxClientDC dc(GetGridWindow());
+            newSize = 0;
+            // get cells's width
+            for (row = 0; row < wxMin(nRows, 500); row++)
+            {
+                wxSize size = GetBestSize(row, col);
+                if (size.x > newSize)
+                    newSize = size.x;
+                if (size.y > newSizeH)
+                    newSizeH = size.y;
+            }
+            // get column's label width
+            wxCoord w, h;
+            dc.SetFont(GetLabelFont());
+            dc.GetMultiLineTextExtent(GetColLabelValue(col), &w, &h);
+            if (GetColLabelTextOrientation() == wxVERTICAL)
+                w = h;
+
+            if (h > maxH)
+                maxH = h;
+            if (w > newSize)
+                newSize = w;
+
+            if (!newSize)
+                newSize = GetRowLabelSize();
+            else
+                // leave some space around text
+                newSize += FromDIP(EXTRAEXTENT_WIDTH);
+
+            colMaxSizes.Add(newSize);
+        }
+        SetColSize(col, newSize);
+        totalSize += newSize;
+    }
+    SetColLabelSize(maxH + FromDIP(EXTRAEXTENT_HEIGHT));
+    availSize = GetClientSize().GetWidth() - GetRowLabelSize();
+    //int newDef = GetDefaultRowSize()+FromDIP(1);
+    //SetDefaultRowSize(newDef, true);
+    // Second pass: shrink wide columns if exceeded available width
+    if (totalSize > availSize)
+    {
+        // A wide column shouldn't take up more than 50% of the visible space
+        maxSize = availSize / 2;
+        for (col = 0; col < nCols; col++)
+        {
+            oldSize = GetColSize(col);
+            // Is too wide and no user-specified size
+            if (oldSize > maxSize && !(col < (int)colMaxSizes.GetCount() && colMaxSizes[col] == -1))
+            {
+                totalSize -= oldSize;
+                /* Shrink wide column to maxSize.
+                 * If the rest of the columns are short, make sure to use all the remaining space,
+                 *   but no more than oldSize (which is enough according to first pass)
+                 */
+                newSize = wxMin(oldSize, wxMax(maxSize, availSize - totalSize));
+                SetColSize(col, newSize);
+                totalSize += newSize;
+            }
+        }
+    }
+}
+
+wxString ctlSQLGrid::GetColKeyValue(int col)
+{
+    wxString colKey = wxString::Format(wxT("%d:"), col) + GetColLabelValue(col);
+    return colKey;
+}
+
+wxSize ctlSQLGrid::GetBestSize(int row, int col)
+{
+    wxSize size;
+
+    wxGridCellAttr* attr = GetCellAttr(row, col);
+    wxGridCellRenderer* renderer = attr->GetRenderer(this, row, col);
+    if (renderer)
+    {
+        wxClientDC dc(GetGridWindow());
+        size = renderer->GetBestSize(*this, *attr, dc, row, col);
+        //		int h =	renderer->GetBestHeight(*this, *attr, dc, row, col, size.GetWidth())
+        size.SetHeight(size.GetHeight() + FromDIP(EXTRAEXTENT_HEIGHT));
+        renderer->DecRef();
+    }
+
+    attr->DecRef();
+
+    return size;
+}
+
+
+
+int recurse(ctlSQLGrid* g, int pos, int row, double& transfer) {
+    wxString text;
+    double leveltime = 0; //actual time level
+    double lastnode = 0;
+    double plan=0;
+    while (row < g->GetNumberRows()) {
+        text = g->GetCellValue(row, 0);
+        int p = 0;
+        while (text.at(p) == ' ')
+        {
+            p++;
+        }
+        if (p == pos) {
+            //
+            lastnode = 0;
+            if (text.at(p) == '-') {
+                // 
+                double m = 1;
+                // ->  Nested Loop  (cost=205.13..273.44 rows=4 width=188) (actual time=13.157..13.157 rows=0 loops=1)
+                bool isstd = false;
+                if (text.Contains("(never executed)")) {
+                    isstd = true;
+                }
+                wxRegEx foundstr(wxT("actual time=.*?\\.\\.([0-9.]+).*?loops=([0-9]+)\\)"), wxRE_ADVANCED);
+                if (foundstr.Matches(text)) {
+                    wxString v = foundstr.GetMatch(text, 1);
+                    v.ToCDouble(&lastnode);
+                    v = foundstr.GetMatch(text, 2);
+                    v.ToDouble(&m);
+                    lastnode = lastnode * m;
+                    leveltime = leveltime + lastnode;
+                }
+                if (isstd)
+                        g->grp->ColoriseRow(row, g->GetColorFor(PlanRow)); // green
+                    else
+                        g->grp->ColoriseRow(row, g->GetColorFor(PlanNode)); // yellow
+
+            }
+            else
+            {
+                g->grp->ColoriseRow(row, g->GetColorFor(PlanRow)); // green
+                // end section
+                if (g->grp->endsectionrow==-1 && p==0 && pos==0) {
+                        wxRegEx foundstr(wxT("Planning Time: ([0-9.]+)"), wxRE_ADVANCED);
+                        if (foundstr.Matches(text)) {
+                            wxString v = foundstr.GetMatch(text, 1);
+                            v.ToCDouble(&plan);
+                            g->grp->SetTimeToRow(row,plan);
+                            g->grp->endsectionrow=row;
+                        }
+                        
+                }
+                if (g->grp->endsectionrow!=-1 && p==0 && pos==0) {
+                    //Planning Time: 1.919 ms
+                    wxRegEx foundstr(wxT("time=([0-9.]+)"), wxRE_ADVANCED);
+                    double currtime=0;
+                    if (foundstr.Matches(text)) {
+                        wxString v = foundstr.GetMatch(text, 1);
+                        v.ToCDouble(&currtime);
+                        g->grp->SetTimeToRow(row,currtime);
+                    } else {
+                        wxRegEx foundstr(wxT("Execution Time: ([0-9.]+)"), wxRE_ADVANCED);
+                        double totalexecute=0;
+                        if (foundstr.Matches(text)) {
+                            wxString v = foundstr.GetMatch(text, 1);
+                            v.ToCDouble(&totalexecute);
+                            g->grp->endsectiontotal=totalexecute;
+                        }
+                    }
+                }
+                g->GetTable()->SetRowLabelValue(row, wxEmptyString);
+            }
+            row++;
+            continue;
+        } if (p < pos) {
+            // end level
+            // leveltime �������� ����� ��������� ����� ������ ����� ����� ������
+            transfer = leveltime;
+            return row;
+        } if (p > pos) {
+            // nested level
+            //g->SetRowGroup(row-1);
+            wxString s;
+            int newrow = recurse(g, p, row, transfer);
+            // 
+            //leveltime=leveltime+transfer;
+            //GroupRows *u=g->getgroup();
+            // Time spent in this node, not in its children
+            double tt = lastnode - transfer;
+            text = g->GetCellValue(row - 1, 0);
+            // these nodes show total time, children included 
+            if ((text.Find("Append") > 0)
+                || (text.Find("Gather") > 0))
+                tt = lastnode;
+            g->grp->AddGroup(row - 1, newrow - 1, tt);
+            s << (tt);
+            s = s + wxT("-");
+            g->GetTable()->SetRowLabelValue(row - 1, s);
+
+            row = newrow;
+        }
+
+    }
+    return row;
+}
+void ctlSQLGrid::SetRowGroup(int row) { };
+bool ctlSQLGrid::FullArrayCollapseRowsPlan(bool clear)
+{
+    //wxString colKey = wxString::Format(wxT("%d:"), col) + GetColLabelValue(col);
+    wxString text;
+    //for(int row = 0; row < GetNumberRows(); ++row) 
+
+    if (grp) { delete grp; }
+    if (clear) { grp = NULL; return true; }
+    grp = new GroupRows(this);
+    double transfersum = 0;
+    int r = recurse(this, 0, 0, transfersum);
+    grp->CalcTime();
+    //for(int row = 0; row < GetNumberRows(); ++row) {
+    //	text = GetCellValue(row, 0);
+    //    //if (row%2==0) SetRowAttr(row,pAttr);
+
+    //}
+
+    return true;
+}
+
+//// CursorCellRenderer
+
+void CursorCellRenderer::Draw(wxGrid& grid, wxGridCellAttr& attr, wxDC& dc,
+        const wxRect& rect, int row, int col, bool isSelected)
+{
+        int hAlign, vAlign;
+        int sPos = -1;
+        bool multiline = false;
+        attr.GetAlignment(&hAlign, &vAlign);
+        //////////////////////////////////////////////////////////////////////////////
+        //CursorCellRenderer::Draw(grid, attr, dc, rect, row, col, isSelected); //
+        dc.SetBackgroundMode(wxSOLID);
+        bool istruncateLine=false;
+        wxString text = grid.GetCellValue(row, col);
+        int len= text.length();
+        bool isfirst=true;
+        bool isnumber=(hAlign == wxALIGN_RIGHT && len<20 && text.IsNumber());
+        // grey out fields if the grid is disabled
+retry:        
+        if (grid.IsEnabled())
+        {
+            istruncateLine=text.Right(5)=="(...)";
+            if (isSelected)
+            {
+                wxColour clr;
+                clr = grid.GetSelectionBackground();
+/*                if (wxWindow::FindFocus() == grid.GetGridWindow())
+                    clr = grid.GetSelectionBackground();
+                else
+                    clr = wxSystemSettings::GetColour(wxSYS_COLOUR_BTNSHADOW);
+*/
+
+                dc.SetBrush(*wxTheBrushList->FindOrCreateBrush(clr));
+            }
+            else
+            {
+                if ((sPos = text.Find(wxT('\n'))) != wxNOT_FOUND) {
+                    dc.SetBrush(*wxTheBrushList->FindOrCreateBrush(clrwithnewline));
+                    multiline = true;
+                }
+                else
+                    dc.SetBrush(*wxTheBrushList->FindOrCreateBrush(attr.GetBackgroundColour()));
+            }
+            // replace \t to u+2192
+            wxUniChar cc = 8594;
+            text.Replace("\t", cc);
+        }
+        else
+        {
+            dc.SetBrush(*wxTheBrushList->FindOrCreateBrush(wxSystemSettings::GetColour(wxSYS_COLOUR_BTNFACE)));
+        }
+
+        dc.SetPen(*wxTRANSPARENT_PEN);
+        dc.DrawRectangle(rect);
+        //////////////////////////////////////////////////////////////////////////////
+        SetTextColoursAndFont(grid, attr, dc, isSelected);
+        ctlSQLGrid* ctrl = static_cast<ctlSQLGrid*>(&grid);
+        if (!ctrl->searchStr.IsEmpty()) {
+            int pp;
+            pp = text.Find(ctrl->searchStr);
+            if (pp >= 0) {
+                wxArrayString lines;
+                grid.StringToLines(text, lines);
+                wxRect r;
+                r.y = rect.y;
+                extern wxBrush selectFindBrush;
+                dc.SetBrush(selectFindBrush);
+                size_t nLines = lines.GetCount();
+                for (size_t l = 0; l < nLines; l++)
+                {
+                    const wxString& line = lines[l];
+                    pp = line.Find(ctrl->searchStr);
+                    if (line.empty() || (pp == -1))
+                    {
+                        r.y += dc.GetCharHeight();
+                        continue;
+                    }
+
+                    int lineWidth, lineWidthP, lineHeight, start = 0;
+                    int dopx=0;
+                    wxString pref;
+                    if (hAlign == wxALIGN_RIGHT) {
+                        start = pp + ctrl->searchStr.Len();
+                        pref = line.substr(start);
+                        if (isnumber) {
+                            int ll=pref.length();
+                            int num_sep=ll/3;
+                            //if (ll % 3 == 0 && num_sep>0 ) num_sep--;
+                            dopx=num_sep*thousands_pixel_sep;
+                        }
+                    }
+                    else
+                        pref = line.substr(start, pp);
+
+                    dc.GetTextExtent(pref, &lineWidthP, &lineHeight);
+                    lineWidthP+=dopx;
+                    r.x = rect.x + lineWidthP;
+                    pref = line.substr(pp, ctrl->searchStr.Len());
+                    dc.GetTextExtent(pref, &lineWidth, &lineHeight);
+                    r.width = lineWidth;
+                    r.height = lineHeight;
+                    if (hAlign == wxALIGN_RIGHT) r.x = rect.x + (rect.width - lineWidth - lineWidthP);
+                    if (!(r.y < (rect.y + rect.height))) { r.y = rect.y + rect.height - 5; r.height = 5; }
+                    if (!((r.x < (rect.x + rect.width)))) { r.x = rect.x + rect.width - 5; r.width = 5; }
+                    dc.DrawRoundedRectangle(r, 3);
+                    break;
+                }
+            }
+        }
+
+        if (!multiline) {
+            //int textWidth = dc.GetTextExtent(text).GetWidth();
+            #ifdef __WXGTK__
+                // Ellipsize working slow in GTK
+                const wxString& ellipsizedText = text;
+            #else
+                        wxEllipsizeMode mode(wxELLIPSIZE_END);
+                        if (hAlign == wxALIGN_RIGHT) mode = wxELLIPSIZE_START;
+                        const wxString& ellipsizedText = wxControl::Ellipsize
+                        (
+                            text,
+                            dc,
+                            mode,
+                            rect.GetWidth() - 2,
+                            wxELLIPSIZE_FLAGS_NONE
+                        );
+            #endif
+                        if (ellipsizedText != text) 
+                            text = ellipsizedText; // small width
+                        else
+                            {
+                                bool isDraw=false;
+                                if (isnumber && isfirst) 
+                                    /* Add thousands separator */
+                                {
+                                        int pos = text.find('.');
+                                        if (pos == wxString::npos)
+                                            pos = len;
+                                        int x=rect.GetRight()-1;
+                                        int yb=rect.GetTop()+1; //GRID_TEXT_MARGIN
+                                        int c=0;
+                                        while (pos > 0)
+                                        {
+                                            pos -= 3;
+                                            wxString tri;
+                                            if (pos >= 0)
+                                            {
+                                                tri=text.substr(pos,3);
+                                            } else tri=text.substr(0,pos+3);
+
+                                                wxSize tripl=dc.GetTextExtent(tri);
+                                                x=x-tripl.GetX();
+                                                if (c>0) x-=thousands_pixel_sep;
+                                                dc.DrawText(tri,x,yb);
+                                            c++;
+                                        }
+                                        int new_width=rect.GetRight()-x;
+                                        isfirst=!isfirst;
+                                        if (new_width>=rect.GetWidth()) goto retry; // small width 
+                                        isDraw=true;
+                                }
+                                if (isDraw) return;
+                            }
+        
+        } // this draw one line
+
+        grid.DrawTextRectangle(dc, text,
+            rect, hAlign, vAlign);
+        if (istruncateLine) {
+            dc.SetPen(*wxRED_PEN);
+            dc.DrawLine(wxPoint(rect.x,rect.y+rect.GetHeight()-2),wxPoint(rect.x+rect.width,rect.y+rect.GetHeight()-2));
+        } 
+}
+
+CursorCellRenderer::CursorCellRenderer(int thous_pixel_sep,const wxColour color_row_with_nl):wxGridCellStringRenderer() {
+    thousands_pixel_sep=thous_pixel_sep;
+    clrwithnewline=color_row_with_nl;
+
+}
+wxSize CursorCellRenderer::GetBestSize(wxGrid& grid,
+                                             wxGridCellAttr& attr,
+                                             wxDC& dc,
+                                             int row, int col){
+    dc.SetFont(attr.GetFont());
+    const wxString text=grid.GetCellValue(row, col);
+    wxSize sz=dc.GetMultiLineTextExtent(text);
+    int len=text.length();
+    if (thousands_pixel_sep !=0 && len<20 && text.IsNumber()) {
+        if (text[0]=='-') len--;
+        int num_sep=len/3;
+        if (len % 3 == 0 && num_sep>0 ) num_sep--;
+        sz.x=sz.x+num_sep*thousands_pixel_sep +1;
+
+    }
+    return sz;
+}
+
+

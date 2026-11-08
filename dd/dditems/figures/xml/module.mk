@@ -1,0 +1,16 @@
+#######################################################################
+#
+# 
+# Copyright (C) 2002 - 2016, The pgAdmin Development Team
+# Copyright (C) 2027, asctime
+# This software is released under the PostgreSQL Licence
+#
+# module.mk - pgadmin/dd/dditems/figures/xml/ Makefile fragment
+#
+#######################################################################
+
+pgadmin_desktop_SOURCES += \
+	dd/dditems/figures/xml/ddXmlStorage.cpp
+
+EXTRA_DIST += \
+	dd/dditems/figures/xml/module.mk

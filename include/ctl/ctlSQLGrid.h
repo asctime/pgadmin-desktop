@@ -1,0 +1,270 @@
+//////////////////////////////////////////////////////////////////////////
+//
+//
+// Copyright (C) 2002 - 2016, The pgAdmin Development Team
+// Copyright (C) 2027, asctime
+// This software is released under the PostgreSQL Licence
+//
+// ctlSQLGrid.h - SQL Data Display Grid
+//
+//////////////////////////////////////////////////////////////////////////
+
+#ifndef CTLSQLGRID_H
+#define CTLSQLGRID_H
+
+// wxWindows headers
+#include <wx/grid.h>
+#include <wx/brush.h>
+#include "utils/popuphelp.h"
+
+class GroupRows;
+enum  {PlanRow,PlanNode,PlanNodeCollapse};
+
+class ctlSQLGrid : public wxGrid
+{
+public:
+    ctlSQLGrid(wxWindow* parent, wxWindowID id, const wxPoint& pos, const wxSize& size);
+    ctlSQLGrid();
+
+    wxString GetExportLine(int row);
+    wxString GetExportLine(int row, wxArrayInt cols);
+    wxString GetExportLine(int row, int col1, int col2);
+    virtual bool IsColText(int col)
+    {
+        return false;
+    }
+    int CopyTableToHtml(wxString htmlquery);
+    int Copy(int gensql);
+    virtual bool CheckRowPresent(int row)
+    {
+        return true;
+    };
+    bool IsSort()
+    {
+        return isSort;
+    };
+    void SetSort(bool flag)
+    {
+        isSort = flag;
+    };
+
+    wxString GetColumnName(int colNum);
+    wxSize GetBestSize(int row, int col);
+    void OnLabelDoubleClick(wxGridEvent& event);
+    void OnGridSelectCell(wxGridEvent& evt);
+    void OnLabelClick(wxGridEvent& event);
+    void OnCellRightClick(wxGridEvent& event);
+    void OnMouseEvent(wxMouseEvent& event);
+    void OnShowPopup(wxThreadEvent& event);
+    bool FullArrayCollapseRowsPlan(bool clear);
+    void AutoSizeColumn(int col, bool setAsMin = false, bool doLimit = true);
+    void AutoSizeColumns(bool setAsMin);
+    wxColour GetColorFor( int type) {
+        if (type==PlanRow) return colorplanrow;
+        if (type==PlanNode) return colorplannode;
+        if (type==PlanNodeCollapse) return colorplannodecollapse;
+        return wxColour();
+    }
+    wxString GetRowLabelValue(int row);
+    void SetRowGroup(int row);
+    GroupRows* grp;
+    int generatesql; // 0 -copy, 1 - insert , 2 - in_list, 3 - where list
+    wxString sqlquerytext;
+    // Fast searh
+    wxString searchStr;
+    wxColour colorodd,colorplanrow,colorplannode,colorplannodecollapse;
+    WX_DECLARE_STRING_HASH_MAP(int, ColKeySizeHashMap);
+
+    DECLARE_DYNAMIC_CLASS(ctlSQLGrid)
+        DECLARE_EVENT_TABLE()
+
+private:
+    void setresizedpi();
+    void OnCopy(wxCommandEvent& event);
+    void OnMouseWheel(wxMouseEvent& event);
+    void OnGridColSize(wxGridSizeEvent& event);
+    void DrawColLabel(wxDC& dc, int col);
+    void DrawRowLabel(wxDC& dc, int row);
+    wxString GetColKeyValue(int col);
+    void AppendColumnHeader(wxString& str, int start, int end);
+    void AppendColumnHeader(wxString& str, wxArrayInt columns);
+    // Stores sizes of colums explicitly resized by user
+    ColKeySizeHashMap colSizes;
+    // Max size for each column
+    wxArrayInt colMaxSizes;
+    bool isSort;
+    // viewr
+    popuphelp* m_Popup = NULL;
+    int rcol, rrow;
+    wxPoint rpos;
+    //FunctionPGHelper fh;
+};
+
+class GroupRows
+{
+public:
+    GroupRows(ctlSQLGrid* grid) {
+        g = grid;
+        rowsGroup.Clear();
+        rowsGroup.Add(0, g->GetNumberRows());
+        end.Clear();
+        end.Add(-1, g->GetNumberRows());
+        run.Clear();
+        run.Add(0.0, g->GetNumberRows());
+        endsectionrow=-1;
+        endsectiontotal=0;
+    };
+    /**
+     * @brief Row span of a plan node and the time it took
+     * 
+     * @param rowgroup First row of the node, the one marked ->
+     * @param lastrowgroup Last row of the node
+     * @param actualtime Time spent in the node
+     */
+    void AddGroup(int rowgroup, int lastrowgroup, double actualtime) {
+        // default group open
+        rowsGroup[rowgroup] = -rowgroup;
+        //beg[rowgroup]=rowgroup;
+        //wxASSERT_MSG(lastrowgroup > end.Count(), " out of bounds");
+        end[rowgroup] = lastrowgroup;
+        run[rowgroup] = actualtime;
+    };
+    void SetTimeToRow(int row, double actualtime) {
+        // default group open
+        //beg[rowgroup]=rowgroup;
+        //wxASSERT_MSG(lastrowgroup > end.Count(), " out of bounds");
+        run[row] = actualtime;
+    };
+    /**
+     * @brief Collapse or expand a plan node
+     * 
+     * @param row first row of the node
+     * @param visible 
+     */
+    void VisibleGroup(int row, bool visible) {
+        int endg = end[row];
+        int grp = IsGroupRow(row);
+        int gg;
+        int r = row + 1;
+        if (grp != 0) {
+
+            if (!visible) {
+                // hide group
+                rowsGroup[row] *= -1;
+                for (int i = r; i < (endg + 1); i++) {
+                    g->HideRow(i);
+                }
+                wxGridCellAttr* pAttrg = new wxGridCellAttr;
+                pAttrg->SetBackgroundColour(g->GetColorFor(PlanNodeCollapse)); // close group
+                g->SetRowAttr(row, pAttrg);
+            }
+            else
+            {
+                // show group 
+                rowsGroup[row] *= -1;
+                int sizerow = g->GetDefaultRowSize();
+                //pAttr->SetBackgroundColour(wxColour(0,162,232));
+                wxGridCellAttr* pAttrg = new wxGridCellAttr;
+                if (g->GetCellValue(row, 0).Contains("(never executed)") ) {
+                    // not higtligth this row
+                    pAttrg->SetBackgroundColour(g->GetColorFor(PlanRow)); // green
+                } else 
+                    pAttrg->SetBackgroundColour(g->GetColorFor(PlanNode)); // yellow
+                g->SetRowAttr(row, pAttrg);
+                for (int i = r; i < (endg + 1); i++) {
+                    gg = IsGroupRow(i);
+                    if (gg <= 0) {
+                        g->SetRowSize(i, sizerow);
+                    }
+                    else
+                    {
+                        g->SetRowSize(i, sizerow);
+                        i = end[i];
+                    }
+
+                }
+
+            }
+        }
+    };
+    // 0 - no group, -int - open group ,+int - close gruop
+    int IsGroupRow(int row) {
+        if (end[row] != -1) {
+            // is group
+            return rowsGroup[row];
+        }
+        else return 0;
+    };
+    void ColoriseRow(int row, const wxColour& color) {
+        //g->GetTable()->SetRowLabelValue(row-1,s);
+        wxGridCellAttr* pAttr = new wxGridCellAttr;
+        pAttr->SetBackgroundColour(color);
+        g->SetRowAttr(row, pAttr);
+    };
+    /**
+     * @brief Sum the time of every node. From row endsectionrow 
+     * this is planning time and trigger time. 
+     * This total is not the per-node percentage.
+     * 
+     */
+    void CalcTime() {
+        //g->GetTable()->SetRowLabelValue(row-1,s);
+        double sum = 0;
+        double total = 1;
+        for (int i = 0; i < run.Count(); i++) {
+            double t = run[i];
+            if (i == 0) {
+                total = abs(t);
+                g->GetTable()->SetRowLabelValue(i, "100");
+            }
+            else
+            {
+                wxString str;
+                if (i>=endsectionrow && endsectionrow!=-1)
+                {
+                    total=endsectiontotal;
+                    if (i==endsectionrow) total+=t; // % plan = plan time / (plan time + execute time)
+                }
+
+                    if (total == 0 || t == 0) {
+                        str = "";
+                    }
+                    else
+                    {
+                        t = (t / total) * 100;
+                        str.Printf(wxT("%5.2f"), t);
+                    }
+                g->GetTable()->SetRowLabelValue(i, str);
+            }
+
+        }
+
+
+    };
+int endsectionrow; // start section after Planning time;
+double endsectiontotal; // value Execution Time:
+private:
+    ctlSQLGrid* g;
+    wxArrayInt rowsGroup, end;
+    wxArrayDouble run;
+};
+//#define TEST_wxGridCellAutoWrapStringRenderer
+
+class CursorCellRenderer : public wxGridCellStringRenderer
+{
+    protected:
+wxSize GetBestSize(wxGrid& grid,
+                                             wxGridCellAttr& attr,
+                                             wxDC& dc,
+                                             int row, int col) wxOVERRIDE;
+
+public:
+    void Draw(wxGrid& grid, wxGridCellAttr& attr, wxDC& dc,
+        const wxRect& rect, int row, int col, bool isSelected) wxOVERRIDE;
+        CursorCellRenderer(int thous_pixel_sep, const wxColour color_row_with_nl);
+private:
+int thousands_pixel_sep;
+wxColour clrwithnewline;
+};
+
+#endif
